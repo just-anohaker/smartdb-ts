@@ -1,0 +1,33 @@
+{
+  "name": "smart-db",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "watch": "npx tsc -w",
+    "build": "npx tsc --downlevelIteration",
+    "clean": "rm -rf dist/*",
+    "test": "npx ts-node test/app.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/lru-cache": "^5.1.0",
+    "@types/better-sqlite3": "^5.4.0",
+    "@types/level-sublevel": "0.0.31",
+    "@types/lodash": "^4.14.126",
+    "@types/node": "^12.0.0",
+    "ts-node": "^8.1.0",
+    "typescript": "^3.4.5"
+  },
+  "dependencies": {
+    "better-sqlite3": "^5.4.0",
+    "json-sql": "https://github.com/AschPlatform/json-sql/tarball/v0.2.4+asch.2",
+    "lru-cache": "^5.1.1",
+    "level": "^5.0.1",
+    "level-secondary": "^1.1.1",
+    "level-sublevel": "^6.6.5",
+    "lodash": "^4.17.11"
+  }
+}
