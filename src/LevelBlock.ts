@@ -11,36 +11,14 @@ export class LevelBlock {
     private historyDb?: IndexedLevel;
     private lastHeight: number;
     constructor(dir: string, levelOptions: {} = {}) {
-        const blkSubLevelMeta = new SubLevelMeta("blk", "height", [{
-            fieldName: "id"
-        }, { fieldName: "delegate" }]);
+        const blkSubLevelMeta = new SubLevelMeta("blk", "height", [
+            { fieldName: "id" },
+            { fieldName: "delegate" }
+        ]);
         const hisSubLevelMeta = new SubLevelMeta("his", "height", []);
         this.db = new LevelDB(dir, [blkSubLevelMeta, hisSubLevelMeta], levelOptions);
         this.lastHeight = -1;
     }
-
-    // ////////////////////////////////////////////////////////////////////////
-    getLastHeightJson(height: number): any {
-        return {
-            height,
-            id: "NULL",
-            delegate: "NULL"
-        };
-    }
-
-    async getLastBlockHeightFromDb(): Promise<number> {
-        let resp = await this.blockDb!.get<{ height: number; }>(keyLastBlockHeight, {});
-        if (resp === undefined) {
-            resp = this.getLastHeightJson(-1);
-            await this.blockDb!.put(keyLastBlockHeight, resp);
-        }
-        return resp!.height;
-    }
-
-    isKeyNotFoundError(error: { name: string; }): boolean {
-        return "NotFoundError" === error.name;
-    }
-    // ////////////////////////////////////////////////////////////////////////
 
     async open(): Promise<void> {
         await this.db.open();
@@ -62,15 +40,18 @@ export class LevelBlock {
             throw new Error("Invalid block data");
         }
         await this.historyDb!.put(block.height, changes);
-        await this.blockDb!.batch([{
-            type: "put",
-            key: block.height,
-            value: block
-        }, {
-            type: "put",
-            key: keyLastBlockHeight,
-            value: this.getLastHeightJson(block.height)
-        }]);
+        await this.blockDb!.batch([
+            {
+                type: "put",
+                key: block.height,
+                value: block
+            },
+            {
+                type: "put",
+                key: keyLastBlockHeight,
+                value: this.getLastHeightJson(block.height)
+            }
+        ]);
         this.lastHeight = block.height;
     }
 
@@ -82,10 +63,11 @@ export class LevelBlock {
                 throw error;
             }
         }
+        return undefined;
     }
 
     async getHistoryChanges(minHeight: number, maxHeight: number): Promise<Map<number, Array<ChangesHistoryItem<Entity>>>> {
-        const result: Map<number, ChangesHistoryItem<Entity>[]> = new Map<number, ChangesHistoryItem<Entity>[]>();
+        const result: Map<number, ChangesHistoryItem<Entity>[]> = new Map();
         for (let iter = minHeight; iter <= maxHeight; iter++) {
             const resp = await this.historyDb!.get<ChangesHistoryItem<Entity>[]>(iter);
             if (resp !== undefined) {
@@ -100,14 +82,17 @@ export class LevelBlock {
             throw new Error(`invalid last block height '${height}`);
         }
 
-        await this.blockDb!.batch([{
-            type: "del",
-            key: height
-        }, {
-            type: "put",
-            key: keyLastBlockHeight,
-            value: this.getLastHeightJson(height - 1)
-        }]);
+        await this.blockDb!.batch([
+            {
+                type: "del",
+                key: height
+            },
+            {
+                type: "put",
+                key: keyLastBlockHeight,
+                value: this.getLastHeightJson(height - 1)
+            }
+        ]);
         await this.historyDb!.del(height);
         this.lastHeight--;
     }
@@ -136,5 +121,27 @@ export class LevelBlock {
             }
         }
         return results;
+    }
+
+    ////
+    private getLastHeightJson(height: number): any {
+        return {
+            height,
+            id: "NULL",
+            delegate: "NULL"
+        };
+    }
+
+    private async getLastBlockHeightFromDb(): Promise<number> {
+        let resp = await this.blockDb!.get<{ height: number; }>(keyLastBlockHeight, {});
+        if (resp === undefined) {
+            resp = this.getLastHeightJson(-1);
+            await this.blockDb!.put(keyLastBlockHeight, resp);
+        }
+        return resp!.height;
+    }
+
+    private isKeyNotFoundError(error: { name: string; }): boolean {
+        return "NotFoundError" === error.name;
     }
 }

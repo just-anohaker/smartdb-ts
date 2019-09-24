@@ -4,8 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "watch": "npx tsc -w",
-    "build": "npx tsc --downlevelIteration",
+    "build": "npx tsc",
     "clean": "rm -rf dist/*",
     "test": "npx ts-node test/app.ts"
   },

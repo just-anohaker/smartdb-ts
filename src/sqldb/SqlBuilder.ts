@@ -1,4 +1,4 @@
-import { JsonObject, ObjectLiteral, deepCopy, VerifyFunction } from "../Common";
+import { JsonObject, deepCopy } from "../Common";
 import { SimpleKey, PrimaryKey, ModelSchema, Schema, FieldTypes } from "../Model";
 import { Utils } from "../Utils";
 import JsonSqlCtor = require("json-sql");
@@ -13,7 +13,7 @@ export enum SqlType {
     Insert = 2,
     Update = 3,
     Delete = 4,
-    Other = 5
+    Other = 9
 }
 
 export type SqlParameters = Array<any> | JsonObject;
@@ -24,9 +24,26 @@ export type SqlAndParameters = {
     expectEffected?: boolean;
 }
 
-export type UnaryOperators = "$null" | "$is" | "$isnot";
-export type BinaryOperators = "$eq" | "$ne" | "$gt" | "$lt" | "$gte" | "$lte" | "$like" | "$field" | "$in" | "$nin" | "$between";
-export type RelationOperators = "$not" | "$and" | "$or";
+export type UnaryOperators =
+    "$null"
+    | "$is"
+    | "$isnot";
+export type BinaryOperators =
+    "$eq"
+    | "$ne"
+    | "$gt"
+    | "$lt"
+    | "$gte"
+    | "$lte"
+    | "$like"
+    | "$field"
+    | "$in"
+    | "$nin"
+    | "$between";
+export type RelationOperators =
+    "$not"
+    | "$and"
+    | "$or";
 export type SelectExpression = {
     select: {
         table: string;
@@ -34,15 +51,15 @@ export type SelectExpression = {
         where?: string;
         [key: string]: any;
     }
-}
+};
 
 export type ValueExpression = SimpleKey;
 export type FieldValueExpression = {
     [field: string]: SimpleKey;
-}
+};
 export type FieldArrayValueExpression = {
     [field: string]: SimpleKey[];
-}
+};
 
 export type NullCompareExpression = {
     $null: string;
@@ -50,31 +67,38 @@ export type NullCompareExpression = {
         [oper in "$is" | "$isnot"]?: {
             [field: string]: null;
         };
-    }
-
-export type ValueCompareExpression = FieldValueExpression | {
-    [field: string]: {
-        [oper in "$eq" | "$ne" | "$gt" | "$lt" | "$gte" | "$lte"]?: ValueExpression | SelectExpression;
     };
-}
 
-export type ArrayCompareExpression = FieldArrayValueExpression | {
-    [field: string]: {
-        [oper in "$between" | "$in" | "$nin"]?: ValueExpression[] | SelectExpression;
+export type ValueCompareExpression = FieldValueExpression
+    | {
+        [field: string]: {
+            [oper in "$eq" | "$ne" | "$gt" | "$lt" | "$gte" | "$lte"]?: ValueExpression | SelectExpression;
+        };
     };
-}
+
+export type ArrayCompareExpression = FieldArrayValueExpression
+    | {
+        [field: string]: {
+            [oper in "$between" | "$in" | "$nin"]?: ValueExpression[] | SelectExpression;
+        };
+    };
 
 export type LikeExpression = {
     [key: string]: {
         $like: string;
     };
-}
+};
 
-export type CompareExpression = ValueCompareExpression | ArrayCompareExpression | LikeExpression | NullCompareExpression;
+export type CompareExpression = ValueCompareExpression
+    | ArrayCompareExpression
+    | LikeExpression
+    | NullCompareExpression;
 
-export type RelationExpression = CompareExpression[] | {
-    $not: CompareExpression | RelationExpression;
-} | {
+export type RelationExpression = CompareExpression[]
+    | {
+        $not: CompareExpression | RelationExpression;
+    }
+    | {
         [oper in "$and" | "$or"]?: CompareExpression[] | RelationExpression[];
     }
 
@@ -100,28 +124,6 @@ export interface SqlBuilder {
 }
 
 export class JsonSqlBuilder implements SqlBuilder {
-    private getTableName(name: string): string {
-        return Utils.String.snakeCase(name) + "s";
-    }
-
-    private replaceJsonFields<T extends object>(schema: ModelSchema<T>, fieldValues: JsonObject): JsonObject {
-        if (schema.jsonProperties.length === 0) {
-            return fieldValues;
-        }
-
-        let result = Object.assign({}, fieldValues);
-        schema.jsonProperties.forEach(value => {
-            if (Reflect.has(fieldValues, value)) {
-                result[value] = JSON.stringify(fieldValues[value]);
-            }
-        });
-        return result;
-    }
-
-    private getPrimaryKeyCondition<T extends object>(schema: ModelSchema<T>, key: PrimaryKey<T>): Partial<T> {
-        return schema.setPrimaryKey({}, key);
-    }
-
     buildDropSchema<T extends object>(schema: ModelSchema<T>): string {
         return `drop table "${this.getTableName(schema.modelName)}"`;
     }
@@ -202,21 +204,21 @@ export class JsonSqlBuilder implements SqlBuilder {
     buildSelect<T extends object>(schema: ModelSchema<T>, params: string[] | JsonObject, where?: SqlCondition, resultRange?: SqlResultRange, sort?: SqlOrder, join?: JsonObject): SqlAndParameters {
         const tableName = this.getTableName(schema.modelName);
         let sqlStatement = {};
-        if (Utils.Lang.isArray(params)) {
-            const fields = params as string[] || schema.properties.map(value => schema.schemaObject.table + "." + value);
-            const limit: LimitAndOffset = (Utils.Lang.isNumber(resultRange) ? { limit: resultRange as number } : (resultRange || {})) as LimitAndOffset;
-            const sorted = sort || {};
-            if (Utils.Lang.isArray(sorted)) {
-                for (let sortedItem of sorted as SqlOrderItem[]) {
-                    for (let sort of Reflect.ownKeys(sortedItem as SqlOrderItem)) {
-                        const rule = sortedItem[sort as string | number] || -1;
-                        sortedItem[sort as string | number] = "ASC" === rule ? 1 : ("DESC" === rule ? -1 : rule);
+        if (Array.isArray(params)) {
+            const fields = params || schema.properties.map(value => schema.schemaObject.table + "." + value);
+            const limit: LimitAndOffset = typeof resultRange === "number" ? { limit: resultRange } : (resultRange || {});
+            let sorted = sort || {};
+            let flag = true;
+            if (!Array.isArray(sorted)) {
+                sorted = [sorted];
+                flag = false;
+            }
+            for (let item of sorted) {
+                for (let key of Reflect.ownKeys(item)) {
+                    if (typeof key === "string" || typeof key === "number") {
+                        const value = item[key] || -1;
+                        item[key] = "ASC" === value ? 1 : ("DESC" === value ? -1 : value);
                     }
-                }
-            } else {
-                for (let sort of Reflect.ownKeys(sorted as SqlOrderItem)) {
-                    const rule = (sorted as SqlOrderItem)[sort as string | number] || -1;
-                    (sorted as SqlOrderItem)[sort as string | number] = "ASC" === rule ? 1 : ("DESC" === rule ? -1 : rule);
                 }
             }
             sqlStatement = {
@@ -226,13 +228,36 @@ export class JsonSqlBuilder implements SqlBuilder {
                 condition: where,
                 limit: limit.limit,
                 offset: limit.offset,
-                sort: sorted,
+                sort: flag ? sorted : sorted[0],
                 join: join
             }
         } else {
             sqlStatement = Object.assign({ type: "select", table: tableName }, params as JsonObject);
         }
         const result: SqlAndParameters = { type: SqlType.Select, query: "" };
-        return Object.assign(result, sqlStatement);
+        return Object.assign(result, JsonSql.build(sqlStatement));
+    }
+
+    ////
+    private getTableName(name: string): string {
+        return Utils.String.snakeCase(name) + "s";
+    }
+
+    private replaceJsonFields<T extends object>(schema: ModelSchema<T>, fieldValues: JsonObject): JsonObject {
+        if (schema.jsonProperties.length === 0) {
+            return fieldValues;
+        }
+
+        let result = Object.assign({}, fieldValues);
+        schema.jsonProperties.forEach(value => {
+            if (Reflect.has(fieldValues, value)) {
+                result[value] = JSON.stringify(fieldValues[value]);
+            }
+        });
+        return result;
+    }
+
+    private getPrimaryKeyCondition<T extends object>(schema: ModelSchema<T>, key: PrimaryKey<T>): Partial<T> {
+        return schema.setPrimaryKey({}, key);
     }
 }

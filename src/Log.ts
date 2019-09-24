@@ -17,7 +17,26 @@ export interface IConsole {
     error(msg: string, ...params: any[]): void;
 }
 
-export class Logger {
+export interface Logger {
+    logLevel: LogLevel;
+    readonly infoEnabled: boolean;
+    readonly traceEnabled: boolean;
+    readonly logEnabled: boolean;
+    readonly debugEnabled: boolean;
+    readonly warnEnabled: boolean;
+    readonly errorEnabled: boolean;
+    readonly fatalEnabled: boolean;
+
+    trace(msg: string, ...params: any[]): void;
+    debug(msg: string, ...params: any[]): void;
+    log(msg: string, ...params: any[]): void;
+    info(msg: string, ...params: any[]): void;
+    warn(msg: string, ...params: any[]): void;
+    error(msg: string, err: Error): void;
+    fatal(msg: string, err: Error): void;
+}
+
+class _Logger implements Logger {
     constructor(private name: string, private level: LogLevel, private format: boolean, private logger: IConsole = console) { }
 
     get infoEnabled(): boolean {
@@ -111,13 +130,13 @@ export class LogManager {
     private static consoleLogger: Logger;
     private static defaultLogLevel: LogLevel = LogLevel.All;
     private static factory: LogFactory = {
-        createLog: (name: string) => new Logger(name, LogLevel.All, false),
+        createLog: (name: string) => new _Logger(name, LogLevel.All, false),
         format: true,
         getLevel: () => LogManager.defaultLogLevel
     };
 
     static get defaultLogger(): Logger {
-        LogManager.consoleLogger = LogManager.consoleLogger || new Logger("default", LogManager.defaultLogLevel, true);
+        LogManager.consoleLogger = LogManager.consoleLogger || new _Logger("default", LogManager.defaultLogLevel, true);
         return LogManager.consoleLogger;
     }
 
@@ -138,7 +157,7 @@ export class LogManager {
             return LogManager.defaultLogger;
         }
 
-        return new Logger(loggerName || "",
+        return new _Logger(loggerName || "",
             LogManager.factory.getLevel(),
             LogManager.factory.format,
             LogManager.factory.createLog(loggerName || "")

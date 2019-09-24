@@ -13,14 +13,15 @@ function getCallback(callback?: Function): { callback?: Function; promise?: Prom
         };
     }
 
-    const promise = new Promise((resolve, reject) => {
-        callback = (err: any, value: any) => {
-            if (err) {
-                return reject(err);
-            }
-            return resolve(value);
-        };
-    });
+    callback = (function () {
+        let result: any;
+        const t = new Promise((resolve, reject) => {
+            result = ((e: any, s: any) => e ? reject(e) : resolve(s));
+        });
+        result.promise = t;
+        return result;
+    })();
+    const promise = (callback as any).promise;
 
     return {
         callback,
@@ -37,10 +38,6 @@ export type IndexField = {
 
 export class SubLevelMeta {
     constructor(public subName: string, public keyField: string, public indexFields: IndexField[] = []) { }
-
-    private findIndexOfFieldName(fieldName: string): number {
-        return this.indexFields.findIndex(value => value.fieldName === fieldName);
-    }
 
     existsIndex(fieldName: string): boolean {
         return this.findIndexOfFieldName(fieldName) > -1;
@@ -63,6 +60,11 @@ export class SubLevelMeta {
             this.indexFields.slice(findIdx, 1);
         }
         return this;
+    }
+
+    ////
+    private findIndexOfFieldName(fieldName: string): number {
+        return this.indexFields.findIndex(value => value.fieldName === fieldName);
     }
 }
 
@@ -90,7 +92,7 @@ export interface IndexedLevel extends LevelGet, LevelOperation {
     getBy<T>(indexField: string, key: any, getCallback?: Callback<MaybeUndefined<T>>): Promise<MaybeUndefined<T>>;
 }
 
-class IndexedLevelImpl implements IndexedLevel {
+class _IndexedLevel implements IndexedLevel {
     private indexArray: IndexField[];
     private indexedSubLevels: Map<string, LevelSecondary.Secondary>;
     constructor(
@@ -99,17 +101,12 @@ class IndexedLevelImpl implements IndexedLevel {
         private keyField: string,
         ..._indexArray: IndexField[]
     ) {
-        this.indexArray = [];
-        this.indexArray = this.indexArray.concat(..._indexArray);
-        this.indexedSubLevels = new Map<string, LevelSecondary.Secondary>();
+        this.indexArray = ([] as IndexField[]).concat(..._indexArray);
+        this.indexedSubLevels = new Map();
         this.indexArray.forEach(value => {
             const secondary = LevelSecondary(subLevelDb, value.fieldName, value.calcIndex);
             this.indexedSubLevels.set(value.fieldName, secondary);
         });
-    }
-
-    get key(): string {
-        return this.keyField
     }
 
     get name(): string {
@@ -120,22 +117,12 @@ class IndexedLevelImpl implements IndexedLevel {
         return this.indexArray;
     }
 
-    keyNotFoundThenUndefined(callback?: Function): { (err: any, value: any): any } | undefined {
-        if (callback) {
-            return (err: any, value: any) => {
-                callback(LevelDB.isKeyNotFoundError(err) ? null : err, value);
-            }
-        }
-
-        return undefined;
-    }
-
     async get<T>(key: any, options?: any, cb?: Callback<MaybeUndefined<T>>): Promise<MaybeUndefined<T>> {
         const { callback, promise } = getCallback(cb);
         try {
             this.subLevelDb.get(key, options, this.keyNotFoundThenUndefined(callback))
         } catch (err) {
-            callback!(err, undefined);
+            callback!(LevelDB.isKeyNotFoundError(err), undefined);
         }
 
         return promise;
@@ -182,7 +169,7 @@ class IndexedLevelImpl implements IndexedLevel {
     }
 
     async batch(arr: any[], options?: any, cb?: Function): Promise<any> {
-        // if (arguments.length === 0) return this.subLevelDb.batch();
+        if (arguments.length === 0) return this.subLevelDb.batch();
 
         const notFunction = options && !Utils.Lang.isFunction(options);
         const newCb = notFunction ? cb : options;
@@ -210,6 +197,21 @@ class IndexedLevelImpl implements IndexedLevel {
     createValueStream(options: any): any {
         return this.subLevelDb.createValueStream(options);
     }
+
+    ////
+    private get key(): string {
+        return this.keyField
+    }
+
+    keyNotFoundThenUndefined(callback?: Function): { (err: any, value: any): any } | undefined {
+        if (callback) {
+            return (err: any, value: any) => {
+                callback(LevelDB.isKeyNotFoundError(err) ? null : err, value);
+            }
+        }
+
+        return undefined;
+    }
 }
 
 export class LevelDB {
@@ -220,9 +222,13 @@ export class LevelDB {
     private subLevels: Map<string, IndexedLevel>;
     private subLevelDb?: LevelSubLevel.Sublevel;
     private leveldb?: any;
-    constructor(private dbDir: string, private subMetas: SubLevelMeta[], options?: {}) {
+    constructor(private dbDir: string, private subMetas: SubLevelMeta[] = [], options: {} = {}) {
         this.leveldb = undefined;
-        this.subLevels = new Map<string, IndexedLevel>();
+        this.subLevels = new Map();
+    }
+
+    get level(): any {
+        return this.leveldb;
     }
 
     get isOpen(): boolean {
@@ -233,20 +239,6 @@ export class LevelDB {
         return !this.leveldb || this.leveldb.isClosed();
     }
 
-    async init(): Promise<void> {
-        this.leveldb = Level(this.dbDir, {
-            valueEncoding: "json"
-        });
-        this.subLevelDb = LevelSubLevel(this.leveldb);
-        this.subMetas.forEach(value => this.registerSubLevel(value));
-    }
-
-    registerSubLevel(subMeta: SubLevelMeta): void {
-        const sublevel = this.subLevelDb!.sublevel(subMeta.subName);
-        const secondary = new IndexedLevelImpl(sublevel, subMeta.subName, subMeta.keyField, ...subMeta.indexFields);
-        this.subLevels.set(subMeta.subName, secondary);
-    }
-
     getSubLevel(subName: string): IndexedLevel {
         const sublevel = this.subLevels.get(subName);
         if (sublevel === undefined) {
@@ -255,7 +247,7 @@ export class LevelDB {
         return sublevel;
     }
 
-    open(openCallback?: Callback<any>): Promise<any> | undefined {
+    async open(openCallback?: Callback<any>): Promise<any | null> {
         const { callback, promise } = getCallback(openCallback);
         if (this.isOpen) {
             process.nextTick(callback!, null, this);
@@ -273,7 +265,7 @@ export class LevelDB {
         return promise;
     }
 
-    close(closeCallback?: Callback<any>): Promise<any> | undefined {
+    async close(closeCallback?: Callback<any>): Promise<any | null> {
         const { callback, promise } = getCallback(closeCallback);
         if (this.isClosed) {
             process.nextTick(callback!, null, this);
@@ -292,7 +284,7 @@ export class LevelDB {
         return promise;
     }
 
-    dump(): Promise<string> {
+    async dump(): Promise<string> {
         return new Promise((resolve, reject) => {
             const stringBuffer: string[] = [];
             this.leveldb.createReadStream()
@@ -300,6 +292,21 @@ export class LevelDB {
                 .on("error", (error: any) => reject(error))
                 .on("end", () => resolve(stringBuffer.join("\r\n")));
         });
+    }
+
+    ////
+    private async init(): Promise<void> {
+        this.leveldb = Level(this.dbDir, {
+            valueEncoding: "json"
+        });
+        this.subLevelDb = LevelSubLevel(this.leveldb);
+        this.subMetas.forEach(value => this.registerSubLevel(value));
+    }
+
+    private registerSubLevel(subMeta: SubLevelMeta): void {
+        const sublevel = this.subLevelDb!.sublevel(subMeta.subName);
+        const secondary = new _IndexedLevel(sublevel, subMeta.subName, subMeta.keyField, ...subMeta.indexFields);
+        this.subLevels.set(subMeta.subName, secondary);
     }
 }
 

@@ -3,7 +3,7 @@ import { SqlParameters, SqlAndParameters, MULTI_SQL_SEPARATOR } from "./SqlBuild
 import { DbRecord } from "../Model";
 import { SqliteWrapper } from "./SqliteWrapper";
 
-class InnerDBTransaction implements DBTransaction {
+class _DBTransaction implements DBTransaction {
     constructor(private connection: DbConnection) {
 
     }
@@ -40,35 +40,31 @@ export class SqliteConnection implements DbConnection {
     }
 
     async query(sql: string, parameters?: SqlParameters): Promise<DbRecord[]> {
-        return this.sqlite.asyncQuery(sql, parameters);
+        return await this.sqlite.asyncQuery(sql, parameters);
     }
 
     querySync(sql: string, parameters?: SqlParameters): DbRecord[] {
         return this.sqlite.query(sql, parameters);
     }
 
-    ensureexecuteEffected(result: SqlExecuteResult, params?: SqlAndParameters) {
-        if (result.rowsEffected === 0) throw new Error("None row effected");
+    async executeBatch(sqls: SqlAndParameters[]): Promise<SqlExecuteResult[]> {
+        return await this.sqlite.asyncExecuteBatch(sqls || [], this.ensureexecuteEffected);
     }
 
     executeBatchSync(sqls: SqlAndParameters[]): SqlExecuteResult[] {
-        return this.sqlite.executeBatch(sqls, this.ensureexecuteEffected);
+        return this.sqlite.executeBatch(sqls || [], this.ensureexecuteEffected);
     }
 
-    async executeBatch(sqls: SqlAndParameters[]): Promise<SqlExecuteResult[]> {
-        return await this.sqlite.asyncExecuteBatch(sqls, this.ensureexecuteEffected);
-    }
-
-    executeSync(sql: string, parameters?: SqlParameters, throwIfNoneEffected?: boolean): SqlExecuteResult {
-        const result = this.sqlite.execute(sql, parameters);
+    async execute(sql: string, parameters?: SqlParameters, throwIfNoneEffected?: boolean): Promise<SqlExecuteResult> {
+        const result = await this.sqlite.asyncExecute(sql, parameters);
         if (throwIfNoneEffected) {
             this.ensureexecuteEffected(result);
         }
         return result;
     }
 
-    async execute(sql: string, parameters?: SqlParameters, throwIfNoneEffected?: boolean): Promise<SqlExecuteResult> {
-        const result = await this.sqlite.asyncExecute(sql, parameters);
+    executeSync(sql: string, parameters?: SqlParameters, throwIfNoneEffected?: boolean): SqlExecuteResult {
+        const result = this.sqlite.execute(sql, parameters);
         if (throwIfNoneEffected) {
             this.ensureexecuteEffected(result);
         }
@@ -86,6 +82,11 @@ export class SqliteConnection implements DbConnection {
 
     async beginTrans(): Promise<DBTransaction> {
         await this.execute("BEGIN TRANSACTION;");
-        return new InnerDBTransaction(this);
+        return new _DBTransaction(this);
+    }
+
+    //// 
+    ensureexecuteEffected(result: SqlExecuteResult): void {
+        if (result.rowsEffected === 0) throw new Error("None row effected");
     }
 }

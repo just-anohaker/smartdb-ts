@@ -12,34 +12,33 @@ export class SqliteWrapper {
         this.log = LogManager.getLogger("SqliteWrapper");
     }
 
+    get isConnected(): boolean {
+        if (this.db) {
+            return this.db.open;
+        }
+        return false;
+    }
+
     open(dbFilePath: string, callback?: Callback<boolean>): boolean {
-        const result = { err: undefined, result: true }
+        const result = { err: null, result: true }
         try {
             this.db = new Sqlite3(dbFilePath);
             if (this.log.traceEnabled) {
                 this.log.trace(`SUCCESS open(db=${dbFilePath})`);
             }
-        } catch (e) {
-            result.err = e;
+        } catch (err) {
+            result.err = err;
             result.result = false;
-
-            if (!callback) {
-                throw e;
+            if (this.log.errorEnabled) {
+                this.log.error(`FAILED open (db=${result})`, err);
             }
+            if (!callback) throw err;
         }
 
         if (callback) {
             callback(result.err, result.result);
         }
         return result.result;
-    }
-
-    get isConnected(): boolean {
-        if (this.db) {
-            return this.db.open;
-        }
-
-        return false;
     }
 
     async asyncOpen(dbFilePath: string): Promise<boolean> {
@@ -56,16 +55,23 @@ export class SqliteWrapper {
     close(callback?: Callback<boolean>): boolean {
         let result = { err: undefined, result: true };
         try {
-
-        } catch (e) {
-            result.err = e;
+            if (this.db && this.isConnected) {
+                this.db.close();
+                if (this.log.traceEnabled) {
+                    this.log.trace("SUCCESS close");
+                }
+            } else {
+                if (this.log.infoEnabled) {
+                    this.log.info("closed already");
+                }
+            }
+        } catch (err) {
+            result.err = err;
             result.result = false;
             if (this.log.errorEnabled) {
-                this.log.error("FAILD close", e);
+                this.log.error("FAILD close", err);
             }
-            if (!callback) {
-                throw e;
-            }
+            if (!callback) throw err;
         }
 
         if (callback) {
@@ -86,7 +92,13 @@ export class SqliteWrapper {
     }
 
     execute(sql: string, parameters?: SqlParameters, callback?: Callback<SqlExecuteResult>): SqlExecuteResult {
-        const result = { err: undefined, result: { lastInsertRowId: "0", rowsEffected: 0 } };
+        const result = {
+            err: undefined,
+            result: {
+                lastInsertRowId: "0",
+                rowsEffected: 0
+            }
+        };
         try {
             if (!this.db) {
                 throw new Error("database not opened.");
@@ -99,12 +111,12 @@ export class SqliteWrapper {
             if (this.log.traceEnabled) {
                 this.log.trace(`SUCCESS execute sql=${sql} param=${JSON.stringify(parameters)}, effected=${result.result.rowsEffected}`);
             }
-        } catch (e) {
-            result.err = e;
+        } catch (err) {
+            result.err = err;
             if (this.log.errorEnabled) {
-                this.log.error(`FAILD execute sql=${sql} param=${JSON.stringify(parameters)}`, e);
+                this.log.error(`FAILD execute sql=${sql} param=${JSON.stringify(parameters)}`, err);
             }
-            if (!callback) throw e;
+            if (!callback) throw err;
         }
         if (callback) {
             callback(result.err, result.result);
@@ -113,7 +125,13 @@ export class SqliteWrapper {
     }
 
     query(sql: string, parameters?: SqlParameters, callback?: Callback<any[]>): any[] {
-        const result: { err: MaybeUndefined<Error>; result: any[] } = { err: undefined, result: [] };
+        const result: {
+            err: MaybeUndefined<Error>;
+            result: any[]
+        } = {
+            err: undefined,
+            result: []
+        };
         try {
             if (!this.db) {
                 throw new Error("database not opened.");
@@ -122,12 +140,12 @@ export class SqliteWrapper {
             if (this.log.traceEnabled) {
                 this.log.trace(`SUCCESS query sql=${sql} param=${JSON.stringify(parameters)}, result count=${result.result.length}`);
             }
-        } catch (e) {
-            result.err = e;
+        } catch (err) {
+            result.err = err;
             if (this.log.errorEnabled) {
-                this.log.error(`FAILD query sql=${sql} param=${JSON.stringify(parameters)}`, e);
+                this.log.error(`FAILD query sql=${sql} param=${JSON.stringify(parameters)}`, err);
             }
-            if (!callback) throw e;
+            if (!callback) throw err;
         }
         if (callback) {
             callback(result.err, result.result);
@@ -136,8 +154,14 @@ export class SqliteWrapper {
     }
 
     executeBatch(sqls: SqlAndParameters[], onExecuted?: (ret: SqlExecuteResult, s: SqlAndParameters) => void, callback?: Callback<SqlExecuteResult[]>): SqlExecuteResult[] {
-        const result: { err: MaybeUndefined<Error>; result: SqlExecuteResult[] } = { err: undefined, result: [] };
-        let sqlRunItem: SqlAndParameters = { type: SqlType.Other, query: "" };
+        const result: {
+            err: MaybeUndefined<Error>;
+            result: SqlExecuteResult[]
+        } = {
+            err: undefined,
+            result: []
+        };
+        let sqlRunItem: SqlAndParameters;
         try {
             sqls.forEach(value => {
                 sqlRunItem = value;
@@ -147,12 +171,12 @@ export class SqliteWrapper {
                 }
                 result.result.push(execResult);
             })
-        } catch (e) {
-            result.err = e;
+        } catch (err) {
+            result.err = err;
             if (this.log.errorEnabled) {
-                this.log.error(`FAILD executeBatch, sql=${sqlRunItem.query} param=${JSON.stringify(sqlRunItem.parameters)}`, e);
+                this.log.error(`FAILD executeBatch, sql=${sqlRunItem!.query} param=${JSON.stringify(sqlRunItem!.parameters)}`, err);
             }
-            if (!callback) throw e;
+            if (!callback) throw err;
         }
         if (callback) {
             callback(result.err, result.result);

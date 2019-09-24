@@ -1,4 +1,4 @@
-import { MaybeUndefined, Entity, Nullable, astype, Property, makeJsonObject } from "../Common";
+import { MaybeUndefined, Entity, Nullable, makeJsonObject } from "../Common";
 import { PrimaryKey, EntityKey, ModelSchema } from "../Model";
 import { Logger } from "../Log";
 import {
@@ -46,14 +46,6 @@ export class BasicEntityTracker implements EntityTracker {
         this.currentVersion = -1;
     }
 
-    async loadHistory(fromVersion: number, toVersion: number): Promise<Map<number, ChangesHistoryItem<Entity>[]>> {
-        if (this.doLoadHistory) {
-            return this.doLoadHistory(fromVersion, toVersion);
-        }
-
-        return new Map();
-    }
-
     async initVersion(version: number): Promise<void> {
         if (this.currentVersion === -1) {
             const history = await this.loadHistory(version, version);
@@ -61,42 +53,24 @@ export class BasicEntityTracker implements EntityTracker {
         }
     }
 
-    private attachHistory(history: Map<number, ChangesHistoryItem<Entity>[]>): void {
-        if (this.log.infoEnabled) {
-            this.log.info(`BEGIN attachHistory history version=${JSON.stringify(this.historyVersion)}`);
-        }
-
-        history.forEach((value, key) => {
-            this.history.set(key, value);
-            this.minVersion = this.minVersion < 0 ? key : Math.min(key, this.minVersion);
-            this.currentVersion = Math.max(key, this.currentVersion);
-        });
-
-        if (this.log.infoEnabled) {
-            this.log.info(`SUCCESS attachHistory size=${JSON.stringify(history ? history.size : 0)}`);
-        }
-    }
-
-    private get historyVersion(): { min: number, max: number } {
-        return {
-            min: this.minVersion,
-            max: this.currentVersion
-        };
-    }
-
     makeModelAndKey<T extends object>(schema: ModelSchema<T>, key: PrimaryKey<T>): ModelAndKey {
         return JSON.stringify({ m: schema.modelName, k: key });
     }
 
     splitModelAndKey<T extends object>(modelAndKey: ModelAndKey): { model: string; key: PrimaryKey<T>; } {
-        const parseResult = JSON.parse(modelAndKey);
-        return {
-            model: parseResult.m,
-            key: parseResult.k
-        };
+        try {
+            const parseResult = JSON.parse(modelAndKey);
+            return {
+                model: parseResult.m,
+                key: parseResult.k
+            };
+        } catch (error) {
+            // TODO
+            return { model: "", key: "" };
+        }
     }
 
-    get trackingEntities(): IterableIterator<TrackingEntity<Entity>> {
+    get trackingEntities(): Iterable<TrackingEntity<Entity>> {
         return this.allTrackingEntities.values();
     }
 
@@ -107,28 +81,6 @@ export class BasicEntityTracker implements EntityTracker {
 
     getConfirmedChanges(): EntityChanges<Entity>[] {
         return this.confirmedChanges;
-    }
-
-    private get changesStack(): Stack<ChangesHistoryItem<Entity>> {
-        return this.isConfirming ? this.unconfirmedChanges : this.confirmedChanges;
-    }
-
-    private buildTrackingEntity<T extends object>(schema: ModelSchema<T>, entity: TrackingEntity<T>, state: EntityState): TrackingEntity<T> {
-        return entity;
-    }
-
-    private ensureNotracking<T extends object>(schema: ModelSchema<T>, key: PrimaryKey<T>) {
-        if (this.getTrackingEntity(schema, key) !== undefined) {
-            throw new Error(`Entity (model='${schema.modelName}, key='${JSON.stringify(key)}') is tracking already`);
-        }
-    }
-
-    private getTracking<T extends object>(schema: ModelSchema<T>, key: PrimaryKey<T>): MaybeUndefined<TrackingEntity<T>> {
-        const entity = this.getTrackingEntity(schema, key);
-        if (entity === undefined) {
-            throw new Error(`Entity (model='${schema.modelName}', key=${JSON.stringify(key)}') is not tracking`);
-        }
-        return entity;
     }
 
     trackNew<T extends object>(schema: ModelSchema<T>, entity: T): TrackingEntity<T> {
@@ -161,7 +113,7 @@ export class BasicEntityTracker implements EntityTracker {
         const modifyProperties: PropertyValue<T>[] = Object.keys(modifier)
             .filter(value => schema.isValidProperty(value) && value !== ENTITY_VERSION_PROPERTY && !Utils.Lang.isEqual(te[value as keyof T], modifier[value as keyof T]))
             .map(value => ({
-                name: astype<Property<T>>(value),
+                name: value as any,
                 value: modifier[value as keyof T]
             }));
         if (modifyProperties.length !== 0) {
@@ -174,8 +126,8 @@ export class BasicEntityTracker implements EntityTracker {
         const resolveKey = schema.resolveKey(key);
         if (resolveKey !== undefined) {
             return resolveKey.isPrimaryKey
-                ? astype<TrackingEntity<T>>(this.cache.get(schema.modelName, resolveKey.key))
-                : astype<TrackingEntity<T>>(this.cache.getUnique(schema.modelName, resolveKey.uniqueName, resolveKey.key));
+                ? this.cache.get(schema.modelName, resolveKey.key) as any
+                : this.cache.getUnique(schema.modelName, resolveKey.uniqueName, resolveKey.key) as any;
         }
         return undefined;
     }
@@ -193,6 +145,130 @@ export class BasicEntityTracker implements EntityTracker {
         if (this.log.traceEnabled) {
             this.log.trace(`SUCCESS acceptChanges Version=${historyVersion}`);
         }
+    }
+
+    rejectChanges(): void {
+        this.cancelConfirm();
+        this.undoChanges(this.confirmedChanges);
+    }
+
+    async rollbackChanges(historyVersion: number): Promise<void> {
+        if (historyVersion > this.currentVersion) {
+            return;
+        }
+
+        const holdVersion = this.currentVersion;
+        if (this.log.traceEnabled) {
+            this.log.trace(`BEGIN rollbackChanges Version : ${holdVersion}`);
+        }
+        await this.loadHistoryUntil(historyVersion);
+        while (this.currentVersion >= historyVersion) {
+            const hversion = this.getHistoryByVersion(this.currentVersion);
+            this.undoChanges(hversion!);
+            this.currentVersion--;
+        }
+        this.minVersion = Math.min(this.minVersion, this.currentVersion);
+        if (this.log.traceEnabled) {
+            this.log.trace(`SUCCESS rollbackChanges Version: ${holdVersion}->${this.currentVersion}`);
+        }
+    }
+
+    get isConfirming(): boolean {
+        return this.confirming;
+    }
+
+    beginConfirm(): void {
+        this.confirming = true;
+        if (this.unconfirmedChanges.length > 0 && this.log.warnEnabled) {
+            this.log.warn(`unconfirmed changes(${this.unconfirmedChanges.length}) detected, you should call commit or cancel changes`);
+        }
+        this.unconfirmedChanges = new Stack();
+        if (this.log.traceEnabled) {
+            this.log.trace("BEGIN beginConfirm");
+        }
+    }
+
+    confirm(): void {
+        this.confirmedChanges.push(...this.unconfirmedChanges);
+        this.unconfirmedChanges = new Stack();
+        this.confirming = false;
+        if (this.log.traceEnabled) {
+            this.log.trace("SUCCESS confirm");
+        }
+    }
+
+    cancelConfirm(): void {
+        this.undoChanges(this.unconfirmedChanges);
+        this.confirming = false;
+        if (this.log.traceEnabled) {
+            this.log.trace("SUCCESS cancelConfirm");
+        }
+    }
+
+    async getChangesUntil(historyVersion: number): Promise<Stack<EntityChanges<Entity>>> {
+        await this.loadHistoryUntil(historyVersion);
+        const changes: Stack<ChangesHistoryItem<Entity>> = [];
+        while (historyVersion < this.currentVersion) {
+            const history = this.getHistoryByVersion(historyVersion++);
+            if (history !== undefined) {
+                changes.push(...history);
+            }
+        }
+        return changes;
+    }
+
+    ////
+    private async loadHistory(fromVersion: number, toVersion: number): Promise<Map<number, ChangesHistoryItem<Entity>[]>> {
+        if (typeof this.doLoadHistory === "function") {
+            return await this.doLoadHistory(fromVersion, toVersion);
+        }
+
+        return new Map();
+    }
+
+    private attachHistory(history: Map<number, ChangesHistoryItem<Entity>[]>): void {
+        if (this.log.infoEnabled) {
+            this.log.info(`BEGIN attachHistory history version=${JSON.stringify(this.historyVersion)}`);
+        }
+
+        history.forEach((value, key) => {
+            this.history.set(key, value);
+            this.minVersion = this.minVersion < 0 ? key : Math.min(key, this.minVersion);
+            this.currentVersion = Math.max(key, this.currentVersion);
+        });
+
+        if (this.log.infoEnabled) {
+            this.log.info(`SUCCESS attachHistory size=${JSON.stringify(history ? history.size : 0)}`);
+        }
+    }
+
+    private get historyVersion(): { min: number, max: number } {
+        return {
+            min: this.minVersion,
+            max: this.currentVersion
+        };
+    }
+
+    private get changesStack(): Stack<ChangesHistoryItem<Entity>> {
+        return this.isConfirming ? this.unconfirmedChanges : this.confirmedChanges;
+    }
+
+    private buildTrackingEntity<T extends object>(schema: ModelSchema<T>, entity: TrackingEntity<T>, state: EntityState): TrackingEntity<T> {
+        return entity;
+    }
+
+    private ensureNotracking<T extends object>(schema: ModelSchema<T>, key: PrimaryKey<T>) {
+        if (this.getTrackingEntity(schema, key) !== undefined) {
+            throw new Error(`Entity (model='${schema.modelName}, key='${JSON.stringify(key)}') is tracking already`);
+        }
+    }
+
+    private getTracking<T extends object>(schema: ModelSchema<T>, key: PrimaryKey<T>): MaybeUndefined<TrackingEntity<T>> {
+        const entity = this.getTrackingEntity(schema, key);
+        if (entity === undefined) {
+            throw new Error(`Entity (model='${schema.modelName}', key=${JSON.stringify(key)}') is not tracking`);
+        }
+        return entity;
     }
 
     private buildCreateChanges<T extends object>(schema: ModelSchema<T>, entity: TrackingEntity<T>): EntityChanges<Entity> {
@@ -219,7 +295,7 @@ export class BasicEntityTracker implements EntityTracker {
         const changes: PropertyChange<Entity>[] = [];
         values.forEach(value => {
             changes.push({
-                name: astype<Property<T>>(value.name),
+                name: value.name as any,
                 current: value.value,
                 original: key[value.name]
             });
@@ -294,64 +370,6 @@ export class BasicEntityTracker implements EntityTracker {
         }
     }
 
-    rejectChanges(): void {
-        this.cancelConfirm();
-        this.undoChanges(this.confirmedChanges);
-    }
-
-    async rollbackChanges(historyVersion: number): Promise<void> {
-        if (historyVersion > this.currentVersion) {
-            return;
-        }
-
-        const holdVersion = this.currentVersion;
-        if (this.log.traceEnabled) {
-            this.log.trace(`BEGIN rollbackChanges Version : ${holdVersion}`);
-        }
-        await this.loadHistoryUntil(historyVersion);
-        while (this.currentVersion >= historyVersion) {
-            const hversion = this.getHistoryByVersion(this.currentVersion);
-            this.undoChanges(hversion!);
-            this.currentVersion--;
-        }
-        this.minVersion = Math.min(this.minVersion, this.currentVersion);
-        if (this.log.traceEnabled) {
-            this.log.trace(`SUCCESS rollbackChanges Version: ${holdVersion}->${this.currentVersion}`);
-        }
-    }
-
-    get isConfirming(): boolean {
-        return this.confirming;
-    }
-
-    beginConfirm(): void {
-        this.confirming = true;
-        if (this.unconfirmedChanges.length > 0 && this.log.warnEnabled) {
-            this.log.warn(`unconfirmed changes(${this.unconfirmedChanges.length}) detected, you should call commit or cancel changes`);
-        }
-        this.unconfirmedChanges = new Stack();
-        if (this.log.traceEnabled) {
-            this.log.trace("BEGIN beginConfirm");
-        }
-    }
-
-    confirm(): void {
-        this.confirmedChanges.push(...this.unconfirmedChanges);
-        this.unconfirmedChanges = new Stack();
-        this.confirming = false;
-        if (this.log.traceEnabled) {
-            this.log.trace("SUCCESS confirm");
-        }
-    }
-
-    cancelConfirm(): void {
-        this.undoChanges(this.unconfirmedChanges);
-        this.confirming = false;
-        if (this.log.traceEnabled) {
-            this.log.trace("SUCCESS cancelConfirm");
-        }
-    }
-
     private getHistoryByVersion(historyVersin: number, setIfNotExists: boolean = false): MaybeUndefined<Stack<ChangesHistoryItem<Entity>>> {
         if (!this.history.get(historyVersin) && setIfNotExists) {
             this.history.set(historyVersin, new Stack());
@@ -370,18 +388,6 @@ export class BasicEntityTracker implements EntityTracker {
         if (this.currentVersion - this.minVersion > this.maxHistoryVersionsHold) {
             this.clearHistoryBefore(this.currentVersion - this.maxHistoryVersionsHold);
         }
-    }
-
-    async getChangesUntil(historyVersion: number): Promise<Stack<EntityChanges<Entity>>> {
-        await this.loadHistoryUntil(historyVersion);
-        const changes: Stack<ChangesHistoryItem<Entity>> = [];
-        while (historyVersion < this.currentVersion) {
-            const history = this.getHistoryByVersion(historyVersion);
-            if (history !== undefined) {
-                changes.push(...history);
-            }
-        }
-        return changes;
     }
 
     private clearHistoryBefore(version: number): void {

@@ -10,7 +10,7 @@ export interface TrackerSqlBuilder {
 }
 
 export class BasicTrackerSqlBuilder implements TrackerSqlBuilder {
-    static fieldValuesFromChanges(entity: EntityChanges<Entity>, rollback: boolean = false) {
+    private static fieldValuesFromChanges(entity: EntityChanges<Entity>, rollback: boolean = false) {
         return rollback
             ? makeJsonObject(entity.propertyChanges, key => key.name, value => value.original)
             : makeJsonObject(entity.propertyChanges, key => key.name, value => value.current);
@@ -44,19 +44,13 @@ export class BasicTrackerSqlBuilder implements TrackerSqlBuilder {
     private buildSqlAndParameters(schema: ModelSchema<Entity>, key: PrimaryKey<Entity>, entity: EntityChanges<Entity>): SqlAndParameters {
         const fieldValues = BasicTrackerSqlBuilder.fieldValuesFromChanges(entity);
         fieldValues[ENTITY_VERSION_PROPERTY] = entity.dbVersion;
-        switch (fieldValues.type) {
-            case EntityChangeType.New: {
+        switch (entity.type) {
+            case EntityChangeType.New:
                 return this.sqlBuilder.buildInsert(schema, fieldValues);
-            }
-
-            case EntityChangeType.Modify: {
+            case EntityChangeType.Modify:
                 return this.sqlBuilder.buildUpdate(schema, key, fieldValues, entity.dbVersion - 1);
-            }
-
-            case EntityChangeType.Delete: {
+            case EntityChangeType.Delete:
                 return this.sqlBuilder.buildDelete(schema, key);
-            }
-
             default:
                 throw new Error(`Invalid EntityChangeType '${entity.type}`);
         }
@@ -65,19 +59,13 @@ export class BasicTrackerSqlBuilder implements TrackerSqlBuilder {
     private buildRollbackSqlAndParameters(schema: ModelSchema<Entity>, key: PrimaryKey<Entity>, entity: EntityChanges<Entity>): SqlAndParameters {
         const fieldValues = BasicTrackerSqlBuilder.fieldValuesFromChanges(entity);
         switch (fieldValues.type) {
-            case EntityChangeType.New: {
+            case EntityChangeType.New:
                 return this.sqlBuilder.buildDelete(schema, key);
-            }
-
-            case EntityChangeType.Modify: {
+            case EntityChangeType.Modify:
                 fieldValues[ENTITY_VERSION_PROPERTY] = entity.dbVersion - 1;
                 this.sqlBuilder.buildUpdate(schema, key, fieldValues, entity.dbVersion);
-            }
-
-            case EntityChangeType.Delete: {
+            case EntityChangeType.Delete:
                 return this.sqlBuilder.buildInsert(schema, fieldValues);
-            }
-
             default:
                 throw new Error(`Invalid EntityChangeType '${entity.type}`);
         }

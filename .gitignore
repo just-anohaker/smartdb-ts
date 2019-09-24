@@ -63,4 +63,8 @@ typings/
 # package-lock.json
 package-lock.json
 
+# ignore test directory
+test/
+.vscode/
+
 

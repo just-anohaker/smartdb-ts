@@ -1,4 +1,4 @@
-import { JsonObject, Partial, Property, Entity, MaybeUndefined, isPrimitiveKey, partialCopy, ObjectLiteral } from "./Common";
+import { JsonObject, Partial, Property, Entity, MaybeUndefined, isPrimitiveKey, partialCopy } from "./Common";
 import { Utils } from "./Utils";
 import { ENTITY_VERSION_PROPERTY, Versioned } from "./tracker/EntityTracker";
 
@@ -11,8 +11,8 @@ export type SimpleKey = string | number;
 export type UniqueKey<T> = Partial<T>;
 export type CompositeKey<T> = UniqueKey<T>;
 export type PrimaryKey<T> = SimpleKey | CompositeKey<T>;
-export type NormalizedEntityKey<T> = UniqueKey<T>;
 export type EntityKey<T> = PrimaryKey<T> | UniqueKey<T> | NormalizedEntityKey<T>;
+export type NormalizedEntityKey<T> = UniqueKey<T>;
 
 export type ResolvedEntityKey<T> = {
     isPrimaryKey?: boolean;
@@ -184,18 +184,6 @@ export class ModelSchema<T extends object> {
         return this.isValidPrimaryKey(key) || this.isValidUniqueKey(key as UniqueKey<T>);
     }
 
-    isNormalizedPrimaryKey(key: PrimaryKey<T>): boolean {
-        if (!Utils.Lang.isObject(key)) {
-            return false;
-        }
-
-        if (this.isCompsiteKey) {
-            return this.isValidPrimaryKey(key);
-        }
-        const keys = Object.keys(key);
-        return keys.length === 1 && keys[0] === this.primaryKey;
-    }
-
     setPrimaryKey(entity: Partial<T>, key: PrimaryKey<T>): Partial<T> {
         if (!this.isValidPrimaryKey(key)) {
             throw new Error(`Invalid PrimaryKey of model '${this.modelName}', key=''${JSON.stringify(key)}`);
@@ -302,8 +290,20 @@ export class ModelSchema<T extends object> {
         };
     }
 
-    // /> private methods
-    getUniqueName(name: EntityKey<T>): MaybeUndefined<string> {
+    ////
+    private isNormalizedPrimaryKey(key: PrimaryKey<T>): boolean {
+        if (!Utils.Lang.isObject(key)) {
+            return false;
+        }
+
+        if (this.isCompsiteKey) {
+            return this.isValidPrimaryKey(key);
+        }
+        const keys = Object.keys(key);
+        return keys.length === 1 && keys[0] === this.primaryKey;
+    }
+
+    private getUniqueName(name: EntityKey<T>): MaybeUndefined<string> {
         if (this.isValidPrimaryKey(name)) {
             return ModelSchema.PRIMARY_KEY_NAME;
         }
@@ -317,11 +317,11 @@ export class ModelSchema<T extends object> {
         return findValue === undefined ? undefined : findValue.name;
     }
 
-    convertType<T>(e: T): T {
+    private convertType<T>(e: T): T {
         return e;
     }
 
-    attachVersionField(): void {
+    private attachVersionField(): void {
         if (!this.schema.tableFields
             .some(val => val.name === ENTITY_VERSION_PROPERTY)) {
             this.schema.tableFields
@@ -333,7 +333,7 @@ export class ModelSchema<T extends object> {
         }
     }
 
-    parseProperties(): void {
+    private parseProperties(): void {
         const primaryField: string[] = this.schema.tableFields
             .filter(value => value.primary_key === !0)
             .map(value => value.name);
@@ -366,15 +366,15 @@ export class ModelSchema<T extends object> {
             .forEach(val => val.properties.forEach(val => this.uniquePropertiesSet.add(val)));
     }
 
-    parseNormalIndexes(schema: Schema): ModelIndex<string>[] {
+    private parseNormalIndexes(schema: Schema): ModelIndex<string>[] {
         return this.getIndexes(schema.tableFields, "index");
     }
 
-    parseUniqueIndexes(schema: Schema): ModelIndex<string>[] {
+    private parseUniqueIndexes(schema: Schema): ModelIndex<string>[] {
         return this.getIndexes(schema.tableFields, "unique");
     }
 
-    getIndexes(fields: Field[], fieldName: keyof Field): ModelIndex<string>[] {
+    private getIndexes(fields: Field[], fieldName: keyof Field): ModelIndex<string>[] {
         const filterResult: Map<string, string[]> = new Map();
         fields
             .filter(value => value[fieldName] !== undefined)

@@ -1,4 +1,4 @@
-import { Nullable, MaybeUndefined, FilterFunction, Entity, JsonObject, deepCopy, ObjectLiteral, astype } from "./Common";
+import { Nullable, MaybeUndefined, FilterFunction, Entity, JsonObject, deepCopy, ObjectLiteral } from "./Common";
 import { EntityKey, NormalizedEntityKey, ModelSchema, ResolvedEntityKey, InvalidEntityKeyError } from "./Model";
 import { SqlCondition, SqlOrder, SqlResultRange, JsonSqlBuilder, SqlAndParameters, MULTI_SQL_SEPARATOR } from "./sqldb/SqlBuilder";
 import { DbConnection, DBTransaction } from "./sqldb/DbConnection";
@@ -15,9 +15,9 @@ export interface DbSessionOptions {
     maxHistoryVersionsHold?: number;
 }
 
-const DEFAULT_HISTORY_VERSION_HOLD: number = 10;
-
 export class DbSession {
+    public static DEFAULT_HISTORY_VERSION_HOLD: number = 10;
+
     private unconfirmedLocks: Set<string>;
     private confirmedLocks: Set<string>;
     private sqlBuilder: JsonSqlBuilder;
@@ -28,138 +28,24 @@ export class DbSession {
     private trackerSqlBuilder: BasicTrackerSqlBuilder;
     private log: Logger;
     constructor(private connection: DbConnection, onLoadHistory: Nullable<LoadChangesHistoryAction>, sessionOptions: DbSessionOptions) {
-        this.log = LogManager.getLogger(DbSession.name + sessionOptions.name === undefined ? "" : `_${sessionOptions.name}`);
+        this.log = LogManager.getLogger(DbSession.name + (sessionOptions.name === undefined ? "" : `_${sessionOptions.name}`));
         this.unconfirmedLocks = new Set();
         this.confirmedLocks = new Set();
         this.sqlBuilder = new JsonSqlBuilder();
         this.schemas = new Map();
         this.sessionCache = new LRUEntityCache(this.schemas);
         this.sessionSerial = -1;
-        const maxHistoryVersionsHold = sessionOptions.maxHistoryVersionsHold || DEFAULT_HISTORY_VERSION_HOLD;
-        this.entityTracker = new SnapshotEntityTracker(this.sessionCache, this.schemas, 0, onLoadHistory == null ? undefined : onLoadHistory);
+        const maxHistoryVersionsHold = sessionOptions.maxHistoryVersionsHold || DbSession.DEFAULT_HISTORY_VERSION_HOLD;
+        this.entityTracker = new SnapshotEntityTracker(
+            this.sessionCache,
+            this.schemas,
+            maxHistoryVersionsHold,
+            onLoadHistory as any
+        );
         this.trackerSqlBuilder = new BasicTrackerSqlBuilder(this.entityTracker, this.schemas, this.sqlBuilder);
     }
 
-    // /////////////////////////////////////////////////////////////////////////
-    static setToString(val: Set<string>): string {
-        return JSON.stringify(new Array<string>(...val));
-    }
-
-    trackPersistentEntities<T extends object>(schema: ModelSchema<T>, caches: T[], cond: boolean = false): T[] {
-        const result: any[] = [];
-        caches.forEach(cache => {
-            const key = schema.getPrimaryKey(cache);
-            const trackingEntity = this.entityTracker.getTrackingEntity(schema, key);
-            const entity = cond && trackingEntity !== undefined ? trackingEntity : this.entityTracker.trackPersistent(schema, cache as Versioned<T>);
-            result.push(schema.copyProperties(entity, true));
-        });
-        return result;
-    }
-
-    reset(cond: boolean = false) {
-        if (cond) {
-            this.sessionCache.clear();
-        }
-    }
-
-    undefinedIfDeleted<T extends object>(val: T): T | undefined {
-        return deepCopy(val);
-    }
-
-    async queryEntities<T extends object>(schema: ModelSchema<T>, sql: SqlAndParameters): Promise<ObjectLiteral[]> {
-        const queryResults = await this.connection.query(sql.query, sql.parameters);
-        return this.replaceEntitiesJsonProperties(schema, queryResults);
-    }
-
-    queryEntitiesSync<T extends object>(schema: ModelSchema<T>, sql: SqlAndParameters): ObjectLiteral {
-        const queryResults = this.connection.querySync(sql.query, sql.parameters);
-        return this.replaceEntitiesJsonProperties(schema, queryResults);
-    }
-
-    replaceJsonProperties<T extends object>(schema: ModelSchema<T>, entity: ObjectLiteral): ObjectLiteral {
-        if (schema.jsonProperties.length === 0) {
-            return entity;
-        }
-        const assignObj = Object.assign({}, entity);
-        schema.jsonProperties.forEach(property => {
-            if (Reflect.has(assignObj, property)) {
-                assignObj[property] = JSON.parse(String(entity[property]));
-            }
-        });
-        return assignObj;
-    }
-
-    replaceEntitiesJsonProperties<T extends object>(schema: ModelSchema<T>, entities: ObjectLiteral[]): ObjectLiteral[] {
-        if (schema.jsonProperties.length === 0) {
-            return entities;
-        }
-
-        return entities.map(entity => this.replaceJsonProperties(schema, entity));
-    }
-
-    makeByKeyCondition<T extends object>(schema: ModelSchema<T>, key: EntityKey<T>): Partial<T> {
-        return schema.resolveKey(key)!.key;
-    }
-
-    async loadEntityByKey<T extends object>(schema: ModelSchema<T>, key: EntityKey<T>): Promise<MaybeUndefined<ObjectLiteral>> {
-        const condition = this.makeByKeyCondition(schema, key);
-        const sqlSelect = this.sqlBuilder.buildSelect(schema, schema.properties, condition);
-        const queryEntities = await this.queryEntities(schema, sqlSelect);
-        if (queryEntities.length > 1) {
-            throw new Error(`entity key is duplicated (model='${schema.modelName}' key='${JSON.stringify(key)}')`);
-        }
-        return queryEntities.length === 1 ? queryEntities[0] : undefined;
-    }
-
-    loadEntityByKeySync<T extends object>(schema: ModelSchema<T>, key: EntityKey<T>): MaybeUndefined<ObjectLiteral> {
-        const condition = this.makeByKeyCondition(schema, key);
-        const sqlSelect = this.sqlBuilder.buildSelect(schema, schema.properties, condition);
-        const queryEntities = this.queryEntitiesSync(schema, sqlSelect);
-        if (queryEntities.length > 1) {
-            throw new Error(`entity key is duplicated (model='${schema.modelName}' key='${JSON.stringify(key)}')`);
-        }
-        return queryEntities.length === 1 ? queryEntities[0] : undefined;
-    }
-
-    normalizeEntityKey<T extends object>(schema: ModelSchema<T>, key: EntityKey<T>): ResolvedEntityKey<T> {
-        const resolveKey = schema.resolveKey(key);
-        if (resolveKey === undefined) {
-            throw new InvalidEntityKeyError(schema.modelName, key);
-        }
-        return resolveKey;
-    }
-
-    getCached<T extends object>(schema: ModelSchema<T>, key: EntityKey<T>): any {
-        const resolveKey = this.normalizeEntityKey(schema, key);
-        const trackingEntity = this.entityTracker.getTrackingEntity(schema, resolveKey.key);
-        if (trackingEntity !== undefined) {
-            return trackingEntity;
-        }
-
-        return resolveKey.isPrimaryKey
-            ? this.sessionCache.get(schema.modelName, resolveKey.key)
-            : this.sessionCache.getUnique(schema.modelName, resolveKey.uniqueName, resolveKey.key);
-    }
-
-    clearLocks(): void {
-        this.unconfirmedLocks.clear();
-        this.confirmedLocks.clear();
-    }
-
-    ensureEntityTracking<T extends object>(schema: ModelSchema<T>, key: EntityKey<T>): Partial<T> {
-        let cache = this.getCached(schema, key);
-        if (cache === undefined) {
-            const entityByKey = this.loadEntityByKeySync(schema, key);
-            if (entityByKey === undefined) {
-                throw new Error(`Entity not found (model='${schema.modelName}', key='${JSON.stringify(key)}')`);
-            }
-            cache = this.entityTracker.trackPersistent(schema, astype<Versioned<T>>(entityByKey));
-        }
-        return cache;
-    }
-
-    // /////////////////////////////////////////////////////////////////////////
-    get isOpen() {
+    get isOpen(): boolean {
         return this.connection && this.connection.isConnected;
     }
 
@@ -188,7 +74,7 @@ export class DbSession {
 
     async initSerial(serial: number): Promise<void> {
         this.sessionSerial = serial;
-        if (serial > 0) {
+        if (serial >= 0) {
             await this.entityTracker.initVersion(serial);
         }
     }
@@ -204,12 +90,8 @@ export class DbSession {
         }
 
         const undefinedCond = (val: T): boolean => this.undefinedIfDeleted(val) !== undefined;
-        const filterCond = filters !== undefined ? (val: T): boolean => filters(val) && undefinedCond(val) : undefinedCond;
-        const results = this.sessionCache.getAll(schema.modelName, filterCond);
-        if (results === undefined) {
-            return [];
-        }
-        return results;
+        const filterCond = filters !== undefined ? ((val: T): boolean => filters(val) && undefinedCond(val)) : undefinedCond;
+        return this.sessionCache.getAll(schema.modelName, filterCond) || [];
     }
 
     loadAll<T extends object>(schema: ModelSchema<T>): T[] {
@@ -222,26 +104,26 @@ export class DbSession {
     }
 
     async getMany<T extends object>(schema: ModelSchema<T>, condition: SqlCondition, cond: boolean = true): Promise<T[]> {
-        const sqlSelect = this.sqlBuilder.buildSelect(schema, schema.properties, condition);
-        const entities = astype<T[]>(await this.queryEntities(schema, sqlSelect));
-        return cond ? this.trackPersistentEntities(schema, entities, true) : entities;
+        const sqlSelect = this.sqlBuilder.buildSelect<T>(schema, schema.properties, condition);
+        const entities = await this.queryEntities<T>(schema, sqlSelect) as any;
+        return cond ? this.trackPersistentEntities<T>(schema, entities, true) : entities;
     }
 
     async query<T extends object>(schema: ModelSchema<T>, condition: SqlCondition, resultRange?: SqlResultRange, sort?: SqlOrder, fields?: string[], join?: JsonObject): Promise<T[]> {
         const sqlSelect = this.sqlBuilder.buildSelect(schema, fields || schema.properties, condition, resultRange, sort, join);
-        return astype<T[]>(await this.queryEntities(schema, sqlSelect));
+        return await this.queryEntities(schema, sqlSelect) as any;
     }
 
     async queryByJson<T extends object>(schema: ModelSchema<T>, params: JsonObject): Promise<T[]> {
         const sqlSelect = this.sqlBuilder.buildSelect(schema, params);
-        return astype<T[]>(await this.queryEntities(schema, sqlSelect));
+        return await this.queryEntities(schema, sqlSelect) as any;
     }
 
     async exists<T extends object>(schema: ModelSchema<T>, condition: SqlCondition): Promise<boolean> {
         const { query, parameters } = this.sqlBuilder.buildSelect(schema, [], condition);
         const newSql = `select exists(${query.replace(MULTI_SQL_SEPARATOR, "")}) as exist`;
         const queryResult = await this.connection.query(newSql, parameters);
-        return Utils.Lang.isArray(queryResult) && Number.parseInt(queryResult[0].exist) > 0;
+        return Array.isArray(queryResult) && Number.parseInt(queryResult[0].exist) > 0;
     }
 
     async count<T extends object>(schema: ModelSchema<T>, condition: SqlCondition): Promise<number> {
@@ -249,18 +131,18 @@ export class DbSession {
             fields: "count(*) as count",
             condition
         });
-        return Utils.Lang.isArray(queryResult) ? Number.parseInt(astype<ObjectLiteral>(queryResult[0]).count) : 0;
+        return Array.isArray(queryResult) ? Number.parseInt((queryResult[0] as any).count) : 0;
     }
 
     create<T extends object>(schema: ModelSchema<T>, key: EntityKey<T>): T {
-        const primaryKey = schema.getNormalizedPrimaryKey(astype<Partial<T>>(key));
+        const primaryKey = schema.getNormalizedPrimaryKey(key as any);
         if (primaryKey === undefined) {
             throw new Error(`entity must contains primary key ( model='${schema.modelName}' entity='${key}')`);
         }
         if (this.sessionCache.exists(schema.modelName, primaryKey)) {
             throw new Error(`entity exists already (model='${schema.modelName}' key='${JSON.stringify(primaryKey)}')`);
         }
-        return deepCopy(this.entityTracker.trackNew(schema, astype<T>(key)));
+        return deepCopy(this.entityTracker.trackNew<T>(schema, key as any));
     }
 
     async load<T extends object>(schema: ModelSchema<T>, key: EntityKey<T>): Promise<MaybeUndefined<T>> {
@@ -273,8 +155,8 @@ export class DbSession {
         if (entityByKey === undefined) {
             return undefined;
         }
-        const persistentEntity = this.entityTracker.trackPersistent(schema, astype<Versioned<T>>(entityByKey));
-        return astype<T>(schema.copyProperties(persistentEntity, true));
+        const persistentEntity = this.entityTracker.trackPersistent(schema, entityByKey as any);
+        return schema.copyProperties(persistentEntity, true) as any;
     }
 
     loadSync<T extends object>(schema: ModelSchema<T>, key: EntityKey<T>): MaybeUndefined<T> {
@@ -287,8 +169,8 @@ export class DbSession {
         if (entityByKey === undefined) {
             return undefined;
         }
-        const persistentEntity = this.entityTracker.trackPersistent(schema, astype<Versioned<T>>(entityByKey));
-        return astype<T>(schema.copyProperties(persistentEntity, true));
+        const persistentEntity = this.entityTracker.trackPersistent(schema, entityByKey as any);
+        return schema.copyProperties(persistentEntity, true) as any;
     }
 
     getChanges(): ChangesHistoryItem<Entity>[] {
@@ -297,12 +179,12 @@ export class DbSession {
 
     getTrackingOrCachedEntity<T extends object>(schema: ModelSchema<T>, key: EntityKey<T>): MaybeUndefined<T> {
         const cache = this.getCached(schema, key);
-        return cache === undefined ? undefined : this.undefinedIfDeleted(cache);
+        return cache === undefined ? undefined : this.undefinedIfDeleted<T>(cache);
     }
 
     getCachedEntity<T extends object>(schema: ModelSchema<T>, key: EntityKey<T>): MaybeUndefined<T> {
         const cache = this.getCached(schema, key);
-        return cache === undefined ? undefined : this.undefinedIfDeleted(cache);
+        return cache === undefined ? undefined : this.undefinedIfDeleted<T>(cache);
     }
 
     lockInThisSession(lockName: string, notThrow: boolean = false): boolean {
@@ -316,9 +198,7 @@ export class DbSession {
             return true;
         }
 
-        if (this.log.warnEnabled) {
-            this.log.warn(`FAILED lock ${lockName}`);
-        }
+        this.log.warnEnabled && this.log.warn(`FAILED lock ${lockName}`);
         if (!notThrow) {
             throw new Error(`Lock name=${lockName} exists already`);
         }
@@ -430,10 +310,132 @@ export class DbSession {
     }
 
     rollbackEntityTransaction(): void {
-        this.entityTracker.confirm();
+        this.entityTracker.cancelConfirm();
         if (this.log.traceEnabled) {
             this.log.trace(`rollback locks ${DbSession.setToString(this.unconfirmedLocks)}`);
         }
         this.unconfirmedLocks.clear();
+    }
+
+    ////
+    private static setToString(val: Set<string>): string {
+        return JSON.stringify(Array.from(val.keys()));
+    }
+
+    private trackPersistentEntities<T extends object>(schema: ModelSchema<T>, caches: T[], cond: boolean = false): T[] {
+        const result: any[] = [];
+        caches.forEach(cache => {
+            const key = schema.getPrimaryKey(cache);
+            const trackingEntity = this.entityTracker.getTrackingEntity(schema, key);
+            const entity = cond && trackingEntity !== undefined ? trackingEntity : this.entityTracker.trackPersistent(schema, cache as Versioned<T>);
+            result.push(schema.copyProperties(entity, true));
+        });
+        return result;
+    }
+
+    private reset(cond: boolean = false) {
+        if (cond) {
+            this.sessionCache.clear();
+        }
+    }
+
+    private undefinedIfDeleted<T extends object>(val: T): T | undefined {
+        return deepCopy(val);
+    }
+
+    private async queryEntities<T extends object>(schema: ModelSchema<T>, sql: SqlAndParameters): Promise<ObjectLiteral[]> {
+        const queryResults = await this.connection.query(sql.query, sql.parameters);
+        return this.replaceEntitiesJsonProperties(schema, queryResults);
+    }
+
+    private queryEntitiesSync<T extends object>(schema: ModelSchema<T>, sql: SqlAndParameters): ObjectLiteral {
+        const queryResults = this.connection.querySync(sql.query, sql.parameters);
+        return this.replaceEntitiesJsonProperties(schema, queryResults);
+    }
+
+    private replaceJsonProperties<T extends object>(schema: ModelSchema<T>, entity: ObjectLiteral): ObjectLiteral {
+        if (schema.jsonProperties.length === 0) {
+            return entity;
+        }
+        const assignEntity = Object.assign({}, entity);
+        schema.jsonProperties.forEach(property => {
+            if (Reflect.has(assignEntity, property)) {
+                assignEntity[property] = JSON.parse(String(entity[property]));
+            }
+        });
+        return assignEntity;
+    }
+
+    private replaceEntitiesJsonProperties<T extends object>(schema: ModelSchema<T>, entities: ObjectLiteral[]): ObjectLiteral[] {
+        if (schema.jsonProperties.length === 0) {
+            return entities;
+        }
+
+        return entities.map(entity => this.replaceJsonProperties(schema, entity));
+    }
+
+    private makeByKeyCondition<T extends object>(schema: ModelSchema<T>, key: EntityKey<T>): Partial<T> {
+        return schema.resolveKey(key)!.key;
+    }
+
+    private async loadEntityByKey<T extends object>(schema: ModelSchema<T>, key: EntityKey<T>): Promise<MaybeUndefined<ObjectLiteral>> {
+        const condition = this.makeByKeyCondition(schema, key);
+        const sqlSelect = this.sqlBuilder.buildSelect(schema, schema.properties, condition);
+        const queryEntities = await this.queryEntities(schema, sqlSelect);
+        if (queryEntities.length > 1) {
+            throw new Error(`entity key is duplicated (model='${schema.modelName}' key='${JSON.stringify(key)}')`);
+        }
+        return queryEntities.length === 1 ? queryEntities[0] : undefined;
+    }
+
+    private loadEntityByKeySync<T extends object>(schema: ModelSchema<T>, key: EntityKey<T>): MaybeUndefined<ObjectLiteral> {
+        const condition = this.makeByKeyCondition(schema, key);
+        const sqlSelect = this.sqlBuilder.buildSelect(schema, schema.properties, condition);
+        const queryEntities = this.queryEntitiesSync(schema, sqlSelect);
+        if (queryEntities.length > 1) {
+            throw new Error(`entity key is duplicated (model='${schema.modelName}' key='${JSON.stringify(key)}')`);
+        }
+        return queryEntities.length === 1 ? queryEntities[0] : undefined;
+    }
+
+    private normalizeEntityKey<T extends object>(schema: ModelSchema<T>, key: EntityKey<T>): ResolvedEntityKey<T> {
+        const resolveKey = schema.resolveKey(key);
+        if (resolveKey === undefined) {
+            throw new InvalidEntityKeyError(schema.modelName, key);
+        }
+        return resolveKey;
+    }
+
+    private getCached<T extends object>(schema: ModelSchema<T>, key: EntityKey<T>): any {
+        const resolveKey = this.normalizeEntityKey(schema, key);
+        const trackingEntity = this.entityTracker.getTrackingEntity(schema, resolveKey.key);
+        if (trackingEntity) {
+            return trackingEntity;
+        }
+
+        return resolveKey.isPrimaryKey
+            ? this.sessionCache.get(schema.modelName, resolveKey.key)
+            : this.sessionCache.getUnique(schema.modelName, resolveKey.uniqueName, resolveKey.key);
+    }
+
+    private clearLocks(): void {
+        this.unconfirmedLocks.clear();
+        this.confirmedLocks.clear();
+    }
+
+    private confirmLocks(): void {
+        this.unconfirmedLocks.forEach(e => this.confirmedLocks.add(e));
+    }
+
+    private ensureEntityTracking<T extends object>(schema: ModelSchema<T>, key: EntityKey<T>): Partial<T> {
+        let cache = this.getCached(schema, key);
+        if (cache === undefined) {
+            const entityByKey = this.loadEntityByKeySync(schema, key);
+            if (entityByKey === undefined) {
+                throw new Error(`Entity not found (model='${schema.modelName}', key='${JSON.stringify(key)}')`);
+            }
+            cache = this.entityTracker.trackPersistent(schema, entityByKey as any);
+        }
+        return cache;
     }
 }

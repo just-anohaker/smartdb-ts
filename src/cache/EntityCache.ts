@@ -1,12 +1,12 @@
-import { MaybeUndefined, Property, FilterFunction, partialCopy, NotImplementError, isPrimitiveKey, astype, Entity } from "../Common";
+import { MaybeUndefined, Property, FilterFunction, partialCopy, NotImplementError, isPrimitiveKey, Entity } from "../Common";
 import { UniqueKey, ModelIndex, NormalizedEntityKey, ModelSchema, EntityKey } from "../Model"
 import { PropertyValue } from "../tracker/EntityTracker";
 import { Logger } from "../Log";
 import { Utils } from "../Utils";
 
-
 export type CacheKey = number | string;
-export type CacheEvitCallback<E extends object> = (key: CacheKey, entity: E) => void;
+
+export type CacheEvitCallback<T extends object> = (key: CacheKey, entity: T) => void;
 
 export interface Cache<T extends object> {
     model: ModelSchema<T>;
@@ -32,7 +32,7 @@ export interface EntityUniqueIndex<T extends object> {
 export class DefaultEntityUniqueIndex<T extends object> implements EntityUniqueIndex<T> {
     private indexMap: Map<string, string>;
     constructor(private name: string, private indexFields: Property<T>[]) {
-        this.indexMap = new Map<string, string>();
+        this.indexMap = new Map();
     }
 
     get indexName(): string {
@@ -41,10 +41,6 @@ export class DefaultEntityUniqueIndex<T extends object> implements EntityUniqueI
 
     get fields(): Property<T>[] {
         return this.indexFields;
-    }
-
-    private getIndexKey(key: UniqueKey<T>): string {
-        return JSON.stringify(key);
     }
 
     exists(uniqueKey: UniqueKey<T>): boolean {
@@ -66,6 +62,11 @@ export class DefaultEntityUniqueIndex<T extends object> implements EntityUniqueI
     delete(uniqueKey: UniqueKey<T>): void {
         this.indexMap.delete(this.getIndexKey(uniqueKey));
     }
+
+    ////
+    private getIndexKey(key: UniqueKey<T>): string {
+        return JSON.stringify(key);
+    }
 }
 
 export class UniquedCache<T extends object> {
@@ -73,25 +74,14 @@ export class UniquedCache<T extends object> {
     constructor(private cache: Cache<T>, uniquedIndexes: ModelIndex<T>[]) {
         this.cache.onEvit = this.afterEvit.bind(this);
 
-        this.indexes = new Map<string, EntityUniqueIndex<T>>();
+        this.indexes = new Map();
         uniquedIndexes.forEach(value => {
             this.indexes.set(value.name, this.createUniqueIndex(value))
         });
     }
 
-    private createUniqueIndex(index: ModelIndex<T>): EntityUniqueIndex<T> {
-        return new DefaultEntityUniqueIndex<T>(index.name, index.properties);
-    }
-
-    private afterEvit(key: CacheKey, entity: T) {
-        this.indexes.forEach(value => {
-            const delKey = partialCopy(entity, value.fields);
-            value.delete(delKey);
-        });
-    }
-
     has(key: string): boolean {
-        return this.indexes.has(key);
+        return this.cache.has(key);
     }
 
     set(key: CacheKey, entity: T): void {
@@ -141,6 +131,18 @@ export class UniquedCache<T extends object> {
             this.evit(key);
         });
     }
+
+    ////
+    private createUniqueIndex(index: ModelIndex<T>): EntityUniqueIndex<T> {
+        return new DefaultEntityUniqueIndex<T>(index.name, index.properties);
+    }
+
+    private afterEvit(key: CacheKey, entity: T) {
+        this.indexes.forEach(value => {
+            const delKey = partialCopy(entity, value.fields);
+            value.delete(delKey);
+        });
+    }
 }
 
 export interface EntityCache {
@@ -164,17 +166,6 @@ export class UniqueEntityCache implements EntityCache {
         this.modelCaches = new Map();
     }
 
-    get models(): ModelSchema<Entity>[] {
-        // return [...this.modelSchemas.values()];
-        const result: ModelSchema<Entity>[] = [];
-        this.modelSchemas.forEach(val => result.push(val));
-        return result;
-    }
-
-    protected createCache<T extends object>(schema: ModelSchema<T>): Cache<T> {
-        throw new NotImplementError();
-    }
-
     registerModel<T extends object>(schema: ModelSchema<T>, uniqueIndexes: ModelIndex<T>[]): void {
         const name = schema.modelName;
         if (this.modelCaches.has(name)) {
@@ -188,25 +179,6 @@ export class UniqueEntityCache implements EntityCache {
         this.modelCaches.delete(modelName);
     }
 
-    protected getModelCache<T extends object>(key: string): MaybeUndefined<UniquedCache<T>> {
-        const schema = this.modelSchemas.get(key)
-        if (schema === undefined) {
-            throw new Error(`Model schema (name='${key}') does not exists`);
-        }
-        if (!this.modelCaches.has(key)) {
-            this.registerModel<Entity>(schema, schema.uniqueIndexes);
-        }
-
-        return this.modelCaches.get(key) as UniquedCache<T>;
-    }
-
-    protected getCacheKey<T extends object>(key: EntityKey<T>): string {
-        if (isPrimitiveKey(key)) {
-            return String(key);
-        }
-        return JSON.stringify(key);
-    }
-
     clear(modelName?: string): void {
         if (Utils.Lang.isString(modelName)) {
             const uniqueCache = this.getModelCache<any>(modelName as string);
@@ -214,12 +186,16 @@ export class UniqueEntityCache implements EntityCache {
                 uniqueCache.clear();
             }
             this.modelCaches.delete(modelName as string);
+            return;
         }
-        // for (let value of this.modelCaches.values()) {
-        //     value.clear();
-        // }
-        this.modelCaches.forEach(val => val.clear());
+        for (let value of Array.from(this.modelCaches.values())) {
+            value.clear();
+        }
         this.modelCaches.clear();
+    }
+
+    get models(): ModelSchema<Entity>[] {
+        return [...Array.from(this.modelSchemas.values())];
     }
 
     get<T extends object>(modelName: string, key: NormalizedEntityKey<T>): MaybeUndefined<T> {
@@ -278,7 +254,7 @@ export class UniqueEntityCache implements EntityCache {
         const uniqueCache = this.getModelCache<T>(modelName);
         if (uniqueCache) {
             uniqueCache.forEach(value => {
-                if (!filter || (filter && filter(astype<T>(modelName)))) {
+                if (!filter || (filter && filter(modelName as any))) {
                     result.push(value);
                 }
             });
@@ -290,7 +266,7 @@ export class UniqueEntityCache implements EntityCache {
 
     put<T extends object>(modelName: string, key: NormalizedEntityKey<T>, entity: T): void {
         if (this.log.traceEnabled) {
-            this.log.trace(`put cache, model = ${modelName}, key=${JSON.stringify(key)}, entity=${JSON.stringify(entity)}`);
+            this.log.trace(`put cache,model=${modelName},key=${JSON.stringify(key)},entity=${JSON.stringify(entity)}`);
         }
         const uniqueCache = this.getModelCache<T>(modelName);
         if (uniqueCache) {
@@ -301,7 +277,7 @@ export class UniqueEntityCache implements EntityCache {
     evit<T extends object>(modelName: string, key: NormalizedEntityKey<T>): void {
         const cacheKey = this.getCacheKey<T>(key);
         if (this.log.traceEnabled) {
-            this.log.trace(`evit cache, model=${modelName}, key=${cacheKey}`);
+            this.log.trace(`evit cache,model=${modelName},key=${cacheKey}`);
         }
         const uniqueCache = this.getModelCache<T>(modelName);
         if (uniqueCache) {
@@ -310,7 +286,8 @@ export class UniqueEntityCache implements EntityCache {
     }
 
     exists<T extends object>(modelName: string, key: NormalizedEntityKey<T>): boolean {
-        return this.get<T>(modelName, key) !== undefined;
+        const cachedKey = this.getCacheKey<T>(key);
+        return this.get<T>(modelName, cachedKey as any) !== undefined;
     }
 
     existsModel(modelName: string): boolean {
@@ -329,5 +306,29 @@ export class UniqueEntityCache implements EntityCache {
         });
         e += "---------------- END DUMP ----------------\n";
         return e;
+    }
+
+    ////
+    protected getModelCache<T extends object>(key: string): MaybeUndefined<UniquedCache<T>> {
+        const schema = this.modelSchemas.get(key)
+        if (schema === undefined) {
+            throw new Error(`Model schema (name='${key}') does not exists`);
+        }
+        if (!this.modelCaches.has(key)) {
+            this.registerModel<Entity>(schema, schema.uniqueIndexes);
+        }
+
+        return this.modelCaches.get(key) as UniquedCache<T>;
+    }
+
+    protected getCacheKey<T extends object>(key: EntityKey<T>): string {
+        if (isPrimitiveKey(key)) {
+            return String(key);
+        }
+        return JSON.stringify(key);
+    }
+
+    protected createCache<T extends object>(schema: ModelSchema<T>): Cache<T> {
+        throw new NotImplementError();
     }
 }

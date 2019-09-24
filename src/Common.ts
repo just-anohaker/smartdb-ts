@@ -24,7 +24,7 @@ export function makeJsonObject<T>(iterable: Iterable<T>, getKey: (t: T) => strin
     CodeContract.argument("getKey", () => CodeContract.notNull(getKey));
     CodeContract.argument("getValue", () => CodeContract.notNull(getValue));
     let result: JsonObject = {};
-    for (let iter of iterable) {
+    for (let iter of Array.from(iterable)) {
         result[getKey(iter)] = getValue(iter);
     }
     return result;
@@ -52,10 +52,6 @@ export function partialCopy<T extends object>(src: T, keysOrKeyFilter: string[] 
 
 export function isPrimitiveKey(key: any): boolean {
     return !!key && (typeof key === "string" || typeof key === "number");
-}
-
-export function astype<T>(src: any): T {
-    return src as T;
 }
 
 export class NotImplementError extends Error {
