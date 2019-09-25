@@ -697,12 +697,12 @@ export class SmartDB extends EventEmitter {
         if (undefined === this.transactionSchema) throw new Error("Transaction model is not found");
     }
 
-    private copyCachedBlock(func: () => MaybeUndefined<Block>, cond: boolean): MaybeUndefined<Block> {
+    private copyCachedBlock(func: () => MaybeUndefined<Block>, withTransactions: boolean): MaybeUndefined<Block> {
         const block = func();
         if (block === undefined) return undefined;
 
         const copy = Object.assign({}, block);
-        if (cond) {
+        if (!withTransactions) {
             Reflect.deleteProperty(copy, "transactions");
         }
         return copy;
